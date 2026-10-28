@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment after the first release
+        type: choice
+        required: true
+        default: patch
+        options: [patch, minor, major]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Restore release version
+        if: github.ref == 'refs/heads/main' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-version --dir "$RUNNER_TEMP/release-version"
+      - name: Select release version
+        id: version
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases must be started from main."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import plistlib
+          import re
+          import subprocess
+          from pathlib import Path
+
+          version_file = Path(os.environ["RUNNER_TEMP"]) / "release-version" / "version.txt"
+          if os.environ["GITHUB_RUN_ATTEMPT"] != "1":
+              version = version_file.read_text().strip()
+          else:
+              tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).splitlines()
+              versions = []
+              for tag in tags:
+                  match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
+                  if match:
+                      versions.append(tuple(map(int, match.groups())))
+              if versions:
+                  major, minor, patch = max(versions)
+                  bump = os.environ["RELEASE_BUMP"]
+                  if bump == "major":
+                      major, minor, patch = major + 1, 0, 0
+                  elif bump == "minor":
+                      minor, patch = minor + 1, 0
+                  elif bump == "patch":
+                      patch += 1
+                  else:
+                      raise ValueError("Unsupported release increment.")
+                  version = f"{major}.{minor}.{patch}"
+              else:
+                  with open("Resources/Info.plist", "rb") as source:
+                      version = plistlib.load(source)["CFBundleShortVersionString"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise ValueError("The app version must be major.minor.patch.")
+          version_file.parent.mkdir(parents=True, exist_ok=True)
+          version_file.write_text(version + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write(f"APP_VERSION={version}\n")
+          print(f"Release version: v{version}")
+          PY
+      - name: Save release version
+        if: github.ref == 'refs/heads/main' && github.run_attempt == '1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-version
+          path: ${{ runner.temp }}/release-version/version.txt
+          if-no-files-found: error
+      - name: Show toolchain
+        run: swift --version
+      - name: Run behavior tests with locked dependencies
+        run: swift test --disable-xctest --force-resolved-versions
+      - name: Run optimized behavior tests
+        run: LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --configuration release --disable-xctest --force-resolved-versions
+      - name: Package Intel app
+        run: ARCH=x86_64 ./scripts/build-app.sh
+      - name: Package Apple Silicon app
+        run: ARCH=arm64 ./scripts/build-app.sh
+      - name: Upload release DMGs
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dmgs
+          path: |
+            dist/ShuttleNext-arm64.dmg
+            dist/ShuttleNext-x86_64.dmg
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  release:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: v${{ needs.verify.outputs.version }}
+    steps:
+      - name: Download release DMGs
+        run: gh run download "$GITHUB_RUN_ID" --name release-dmgs --dir dist
+      - name: Ensure release tag
+        run: |
+          EXISTING_SHA="$(gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" \
+            --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .object.sha")"
+          if [[ -z "$EXISTING_SHA" ]]; then
+            gh api --silent --method POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA"
+          elif [[ "$EXISTING_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::Release tag points to a different commit."
+            exit 1
+          fi
+      - name: Publish release
+        run: |
+          if STATE="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq '
+            if .draft then "draft"
+            elif ([.assets[] | select(.state == "uploaded") | .name]
+              | contains(["ShuttleNext-arm64.dmg", "ShuttleNext-x86_64.dmg"])) then "published"
+            else "incomplete" end')"; then
+            if [[ "$STATE" == "published" ]]; then
+              echo "Release $RELEASE_TAG is already published."
+              exit 0
+            fi
+            if [[ "$STATE" != "draft" ]]; then
+              echo "::error::Published release is missing one or both DMGs."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "ShuttleNext $RELEASE_TAG" \
+              --notes "Requires macOS 14 or later. Use arm64 for Apple Silicon or x86_64 for Intel. Builds are ad-hoc signed and not notarized."
+          fi
+          gh release upload "$RELEASE_TAG" \
+            dist/ShuttleNext-arm64.dmg dist/ShuttleNext-x86_64.dmg --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

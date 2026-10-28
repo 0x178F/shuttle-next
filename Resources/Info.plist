@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>com.fatihakdogan.ShuttleNext</string>
+    <key>CFBundleName</key><string>ShuttleNext</string>
+    <key>CFBundleDisplayName</key><string>ShuttleNext</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key><array>
+        <string>en</string><string>tr</string><string>de</string>
+        <string>fr</string><string>es</string><string>it</string>
+        <string>pt-BR</string><string>ja</string><string>zh-Hans</string><string>ko</string>
+    </array>
+    <key>CFBundleExecutable</key><string>ShuttleNext</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSAppleEventsUsageDescription</key><string>ShuttleNext opens SSH connections in the terminal application you choose.</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+    <key>UTExportedTypeDeclarations</key><array><dict>
+        <key>UTTypeIdentifier</key><string>com.fatihakdogan.ShuttleNext.backup</string>
+        <key>UTTypeDescription</key><string>ShuttleNext Encrypted Backup</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>shuttlenext</string></array>
+        </dict>
+    </dict></array>
+</dict></plist>
